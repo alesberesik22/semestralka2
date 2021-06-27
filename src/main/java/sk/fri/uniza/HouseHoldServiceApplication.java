@@ -14,6 +14,7 @@ import sk.fri.uniza.db.FieldDAO;
 import sk.fri.uniza.db.HouseHoldDAO;
 import sk.fri.uniza.db.IotNodeDAO;
 import sk.fri.uniza.health.DatabaseHealthCheck;
+import sk.fri.uniza.health.DeleteHealthCheck;
 import sk.fri.uniza.model.*;
 import sk.fri.uniza.resources.FieldResource;
 import sk.fri.uniza.resources.HouseHoldResource;
@@ -21,6 +22,26 @@ import sk.fri.uniza.resources.IoTNodeResource;
 
 public class HouseHoldServiceApplication
         extends Application<HouseHoldServiceConfiguration> {
+
+    // Vytvorenie Hibernate baliká: tento balík kombinuje objekt určený na
+    // nastavenie Hibernat a samotnú knižnicu Hibernate
+    private final HibernateBundle<HouseHoldServiceConfiguration> hibernate =
+            // Všetky triedy(v žargóne Hibernate sú označované ako Entity),
+            // ktoré tvoria model musia byť prídané do Bundle
+            new HibernateBundle<HouseHoldServiceConfiguration>(
+                    HouseHold.class,
+                    IotNode.class,
+                    Field.class,
+                    DataDouble.class,
+                    DataString.class,
+                    DataInteger.class,
+                    ContactPerson.class) {
+                @Override
+                public DataSourceFactory getDataSourceFactory(
+                        HouseHoldServiceConfiguration configuration) {
+                    return configuration.getDataSourceFactory();
+                }
+            };
 
 
     public static void main(final String[] args) throws Exception {
@@ -46,6 +67,9 @@ public class HouseHoldServiceApplication
             }
         });
 
+        // Pripojený balík Hibernate (ORM databáza)
+        bootstrap.addBundle(hibernate);
+
     }
 
     // V rámci životného cyklu, je táto metóda zavolaná až po metóde initialize.
@@ -54,6 +78,52 @@ public class HouseHoldServiceApplication
     @Override
     public void run(final HouseHoldServiceConfiguration configuration,
                     final Environment environment) {
+        // Vytvorené objekty na prístup k databáze
+        final HouseHoldDAO houseHoldDAO =
+                new HouseHoldDAO(hibernate.getSessionFactory());
+        final DataDAO dataDAO =
+                new DataDAO(hibernate.getSessionFactory());
+        final FieldDAO fieldDAO =
+                new FieldDAO(hibernate.getSessionFactory());
+        final IotNodeDAO iotNodeDOA =
+                new IotNodeDAO(hibernate.getSessionFactory());
+
+        // Vytvorené objekty reprezentujúce REST rozhranie
+        environment.jersey()
+                .register(new HouseHoldResource(houseHoldDAO, dataDAO));
+        environment.jersey()
+                .register(new FieldResource(fieldDAO));
+        environment.jersey()
+                .register(new DateParameterConverterProvider());
+        environment.jersey()
+                .register(new IoTNodeResource(iotNodeDOA));
+
+        // Vytvorenie Healthcheck (overenie zdravia aplikácie), ktorý
+        // využijeme na otestovanie databázy
+        UnitOfWorkAwareProxyFactory unitOfWorkAwareProxyFactory =
+                new UnitOfWorkAwareProxyFactory(hibernate);
+        final DatabaseHealthCheck databaseHealthCheck =
+                unitOfWorkAwareProxyFactory
+                        .create(DatabaseHealthCheck.class,
+                                new Class[]{HouseHoldDAO.class,
+                                        IotNodeDAO.class, FieldDAO.class,
+                                        DataDAO.class},
+                                new Object[]{houseHoldDAO, iotNodeDOA,
+                                        fieldDAO, dataDAO
+                                });
+        final DeleteHealthCheck deleteHealthCheck =
+                unitOfWorkAwareProxyFactory
+                        .create(DeleteHealthCheck.class,
+                                FieldDAO.class,
+                                fieldDAO);
+        // Zaregistrovanie Healthcheck
+        environment.healthChecks()
+                .register("databaseHealthcheck", databaseHealthCheck);
+        environment.healthChecks()
+                .register("deleteHealthcheck", deleteHealthCheck);
+        // Spustenie všetkých health kontrol
+        environment.healthChecks().runHealthChecks();
+        environment.healthChecks().runHealthCheck("deleteHealthcheck");
 
     }
 
